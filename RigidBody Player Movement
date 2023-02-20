@@ -1,0 +1,372 @@
+using JetBrains.Annotations;
+using System.Collections;
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using UnityEditor.AnimatedValues;
+using UnityEditor.Build;
+using UnityEngine;
+using UnityEngine.Events;
+
+
+public class PlayerMovement : MonoBehaviour
+{
+
+    // Components
+    [SerializeField] private Animator animator;
+    [SerializeField] private Rigidbody2D rb;
+    [SerializeField] private BoxCollider2D bc2d;
+    [SerializeField] private TrailRenderer tr;
+
+    [Header("Movement")]
+    public float moveSpeed = 5.0f;
+    public float jumpForce = 10.0f;
+    private bool isOnGround = false;
+    public float jumpVelocity = 5.0f;
+    public float pushDown;
+    public float jumpCut;
+    public float coyoteTime = 0.2f;
+    private float coyoteTimeCounter;
+    public float jumpBufferTime = .2f;
+    private float jumpBufferCounter;
+    public float upwardForce = 5.0f;
+    public float rightForce = 5.0f;
+    public float returnForce = 2.0f;
+
+    private bool isBird = false;
+    private bool isReturning = false;
+    private float timeLeft;
+
+
+    [Header("Wall")]
+    private bool isWallSliding;
+    public float wallSlidingSpeed = 2f;
+    [SerializeField] private Transform wallCheck;
+    [SerializeField] private LayerMask wall;
+    private bool isWallJumping;
+    private float WallJumpingDirection;
+    public float wallJumpingTime;
+    private float wallJumpingCounter = 1f;
+    public float wallJumpingDuration;
+    public Vector2 wallJumpingPower = new Vector2(1f, 1f);
+    private float wallJumpMax = 1f;
+
+
+
+    [Header("Dashing")]
+    [SerializeField] private float dashingVelocity = 14f;
+    [SerializeField] private float dashingTime = 0.5f;
+    private Vector2 dashingDir;
+    private bool isDashing;
+    private bool canDash = false;
+    private float dashTimer;
+
+
+
+    [Header("Special")]
+    public float bounceForce;
+    public float flyGravity;
+    public float birdTimer;
+
+    // Start is called before the first frame update
+    void Start()
+    {
+        rb = GetComponent<Rigidbody2D>();
+        bc2d = GetComponent<BoxCollider2D>();
+        tr = GetComponent<TrailRenderer>();
+        animator = GetComponent<Animator>();
+        canDash = true;
+
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+
+
+        wallSlide();
+        WallJump();
+        if (isWallJumping)
+        {
+            wallJumpingCounter -= Time.deltaTime;
+            if (wallJumpingCounter <= 0)
+            {
+                isWallJumping = false;
+            }
+
+            animator.SetBool("isJumping", false);
+        }
+
+        if (onWall())
+        {
+            wallJumpMax = 1f;
+        }
+
+
+        //coyote time and jump buffer
+        if (isOnGround)
+        {
+            coyoteTimeCounter = coyoteTime;
+        }
+        else
+        {
+            coyoteTimeCounter -= Time.deltaTime;
+        }
+        if (Input.GetButtonDown("Jump"))
+        {
+            jumpBufferCounter = jumpBufferTime;
+        }
+        else
+        {
+            jumpBufferCounter -= Time.deltaTime;
+        }
+
+        // Movement input
+        float horizontalInput = Input.GetAxis("Horizontal");
+        rb.velocity = new Vector2(horizontalInput * moveSpeed, rb.velocity.y);
+        //Animation code
+        animator.SetFloat("Speed", Mathf.Abs(horizontalInput));
+
+        //flip character when moving that way
+        if (horizontalInput > 0)
+        {
+            transform.rotation = Quaternion.Euler(0f, 0f, 0f);
+        }
+        else if (horizontalInput < 0)
+        {
+            transform.rotation = Quaternion.Euler(0f, 180f, 0f);
+        }
+        //Jump Input
+        if (coyoteTimeCounter > 0f && jumpBufferCounter > 0f)
+        {
+            animator.SetBool("isJumping", true);
+            rb.AddForce(Vector2.up * jumpForce, ForceMode2D.Impulse);
+            jumpBufferCounter = 0f;
+        }
+
+        // Increase the player's velocity when the jump button is released
+        if ((Input.GetButtonUp("Jump")) && isOnGround)
+        {
+            if (rb.velocity.y > 0f)
+            {
+                rb.velocity = new Vector2(rb.velocity.x, rb.velocity.y * jumpCut);
+            }
+
+            coyoteTimeCounter = 0f;
+        }
+        //jump animation
+        if (Input.GetButtonDown("Jump"))
+        {
+            animator.SetTrigger("takeoff");
+        }
+
+        if (rb.velocity.y > 0)
+        {
+            animator.SetBool("isJumping", true);
+        }
+
+        //Downwards force when pressing down
+        float verticalInput = Input.GetAxis("Vertical");
+        if (isOnGround == false && verticalInput < 0 || Input.GetKeyDown(KeyCode.S))
+        {
+            rb.AddForce(Vector2.down * pushDown, ForceMode2D.Impulse);
+            animator.SetBool("isJumping", false);
+        }
+
+        if (canDash)
+        {
+            Debug.Log("dash");
+        }
+        if (Input.GetButtonDown("Dash") && canDash && isOnGround==false)
+        {
+            isDashing = true;
+            canDash = false;
+            tr.emitting = true;
+            dashingDir = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+
+            if (dashingDir == Vector2.zero)
+            {
+                dashingDir = new Vector2(transform.localScale.x, 0);
+            }
+            
+            // Reset dash timer
+            dashTimer = 0f;
+        }
+
+        if (isDashing)
+        {
+            rb.velocity = dashingDir.normalized * dashingVelocity;
+
+            // Update dash timer
+            dashTimer += Time.deltaTime;
+
+            // If the dash timer reaches the dash duration, stop dashing
+            if (dashTimer >= dashingTime)
+            {
+                StopDashing();
+            }
+            if (rb.velocity.y < 0f)
+            {
+                rb.gravityScale = .8f;
+            }
+        }
+
+
+        if (isOnGround)
+        {
+            canDash= true;
+            rb.gravityScale = 5f;
+            animator.SetBool("falling", false);
+            animator.SetBool("isJumping", false);
+        }
+
+        if (isBird)
+        {
+            animator.SetBool("falling", false);
+        }
+        //downwards check
+        if (rb.velocity.y < 0 && onWall() == false)
+        {
+            animator.SetBool("isJumping", false);
+            animator.SetBool("falling", true);
+        }
+        else if (rb.velocity.y < 0 && (isBird))
+        {
+            animator.SetBool("falling", false);
+        }
+
+
+        if (isBird)
+        {
+            rb.gravityScale = flyGravity;
+            canDash = false;
+            Vector2 rightDirection = new Vector2(rightForce, 0);
+            rb.AddForce(rightDirection);
+            animator.SetBool("isFlying", true);
+            float vertical = Input.GetAxis("Vertical");
+            rb.velocity = new Vector2(rb.velocity.x, vertical * upwardForce);
+            {
+                rb.AddForce(transform.up * upwardForce);
+            }
+            birdTimer -= Time.deltaTime;
+            if (birdTimer <= 0f)
+            {
+                isReturning = true;
+            }
+        }
+
+
+    }
+    private void FixedUpdate()
+    {
+        if (isReturning)
+        {
+            animator.SetBool("isFlying", false);
+            Vector2 returnDirection = new Vector2(0, -returnForce);
+            rb.AddForce(returnDirection);
+            isBird= false;
+            birdTimer = 5f;
+        }
+    }
+
+
+    private void StopDashing()
+    {
+        tr.emitting = false;
+        isDashing = false;
+        rb.velocity = Vector2.zero;
+    }
+
+    private void OnCollisionExit2D(Collision2D collision)
+    {
+        if (collision.gameObject.CompareTag("Ground"))
+        {
+            isOnGround = false;
+
+        }
+    }
+
+    private void OnCollisionEnter2D(Collision2D collision)
+    {
+        if (collision.gameObject.CompareTag("Ground"))
+        {
+            isOnGround = true;
+            animator.SetBool("isJumping", false);
+            isWallSliding = false;
+            jumpForce = 15.0f;
+        }
+
+        if (collision.gameObject.CompareTag("dashorb"))
+        {
+            canDash = true;
+        }
+
+        if (collision.gameObject.CompareTag("bouncer"))
+        {
+            rb.AddForce(Vector2.up * bounceForce);
+            animator.SetBool("isJumping", true);
+        }
+        if (collision.gameObject.tag == "CagedBird")
+        {
+            animator.SetBool("IsBird", true);
+            isBird = true;
+            timeLeft = 5.0f;
+        }
+    }
+    private bool onWall()
+    {
+        return Physics2D.OverlapCircle(wallCheck.position, .2f, wall);
+    }
+    private void wallSlide()
+    {
+        if (onWall() && isOnGround == false)
+        {
+            isWallSliding = true;
+            rb.velocity = new Vector2(rb.velocity.x, Mathf.Clamp(rb.velocity.y, -wallSlidingSpeed, float.MaxValue));
+        }
+        else
+        {
+            isWallSliding = false;
+        }
+    }
+    private void WallJump()
+    {
+        if (isWallSliding)
+        {
+            isWallJumping = false;
+            wallJumpingCounter = wallJumpingTime;
+            float horizontalInput = Input.GetAxis("Horizontal");
+            wallJumpMax = 1f;
+
+            if (horizontalInput > 0)
+            {
+                WallJumpingDirection = 1;
+            }
+            else if (horizontalInput < 0)
+            {
+                WallJumpingDirection = -1;
+            }
+
+            CancelInvoke(nameof(StopWallJumping));
+        }
+        else
+        {
+            wallJumpingCounter -= Time.deltaTime;
+        }
+
+        if (Input.GetButtonDown("Jump") && wallJumpMax > 0f)
+        {
+            isWallJumping = true;
+            rb.velocity = new Vector2(WallJumpingDirection * wallJumpingPower.x, wallJumpingPower.y);
+            wallJumpMax = 0f;
+        }
+        else if (Input.GetButtonDown("Jump") && wallJumpMax <= 0f)
+
+            Invoke(nameof(StopWallJumping), wallJumpingDuration);
+    }
+    private void StopWallJumping()
+    {
+        isWallJumping = false;
+    }
+    }
+
